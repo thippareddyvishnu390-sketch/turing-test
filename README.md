@@ -6,7 +6,7 @@ Production-ready FastAPI scaffold for a Turing Test chatbot.
 
 - The system prompt is loaded once at startup and cached in memory.
 - Each request reuses the cached prompt rather than reloading the file.
-- Gemini receives the prompt through the SDK's system instruction field.
+- Groq receives the prompt through the OpenAI-style `messages` payload; the cached system prompt is inserted as the first message for every request.
 - The /chat/completions endpoint remains OpenAI-compatible.
 
 ## Setup

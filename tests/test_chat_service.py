@@ -22,22 +22,43 @@ def test_system_prompt_is_cached_on_startup(monkeypatch, tmp_path):
     assert chat_service._system_prompt_cache == first_prompt
 
 
-def test_generate_response_uses_system_instruction_when_supported(monkeypatch):
+def test_generate_response_uses_system_prompt_when_supported():
     class DummyResponse:
-        text = "hello"
-        usage_metadata = None
+        # Groq wrapper expects .choices[0].message.content; mimic raw structure
+        class Choice:
+            class Message:
+                def __init__(self, content):
+                    self.content = content
 
-    class DummyModels:
+            def __init__(self, content):
+                self.message = DummyResponse.Choice.Message(content)
+
+        def __init__(self):
+            self.choices = [DummyResponse.Choice("hello")]
+            self.usage = None
+
+    class DummyCompletions:
         def __init__(self):
             self.calls = []
 
-        def generate_content(self, model, contents, config):
-            self.calls.append({"model": model, "contents": contents, "config": config})
+        def create(self, model, messages, temperature, max_tokens):
+            self.calls.append(
+                {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+            )
             return DummyResponse()
+
+    class DummyChat:
+        def __init__(self):
+            self.completions = DummyCompletions()
 
     class DummyClient:
         def __init__(self):
-            self.models = DummyModels()
+            self.chat = DummyChat()
 
     service = chat_service.ChatService(system_prompt="You are helpful")
     service.client = DummyClient()
@@ -47,25 +68,49 @@ def test_generate_response_uses_system_instruction_when_supported(monkeypatch):
     )
 
     assert response.text == "hello"
-    assert service.client.models.calls[0]["config"].system_instruction == "You are helpful"
+    assert service.client.chat.completions.calls[0]["model"] == service.settings.GROQ_MODEL_NAME
+    assert service.client.chat.completions.calls[0]["messages"] == [
+        {"role": "system", "content": "You are helpful"},
+        {"role": "user", "content": "Hi there"},
+    ]
 
 
 def test_generate_response_preserves_full_conversation_history():
     class DummyResponse:
-        text = "hello"
-        usage_metadata = None
+        class Choice:
+            class Message:
+                def __init__(self, content):
+                    self.content = content
 
-    class DummyModels:
+            def __init__(self, content):
+                self.message = DummyResponse.Choice.Message(content)
+
+        def __init__(self):
+            self.choices = [DummyResponse.Choice("hello")]
+            self.usage = None
+
+    class DummyCompletions:
         def __init__(self):
             self.calls = []
 
-        def generate_content(self, model, contents, config):
-            self.calls.append({"model": model, "contents": contents, "config": config})
+        def create(self, model, messages, temperature, max_tokens):
+            self.calls.append(
+                {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+            )
             return DummyResponse()
+
+    class DummyChat:
+        def __init__(self):
+            self.completions = DummyCompletions()
 
     class DummyClient:
         def __init__(self):
-            self.models = DummyModels()
+            self.chat = DummyChat()
 
     service = chat_service.ChatService(system_prompt="You are helpful")
     service.client = DummyClient()
@@ -80,38 +125,62 @@ def test_generate_response_preserves_full_conversation_history():
     response = asyncio.run(service.generate_response(messages))
 
     assert response.text == "hello"
-    assert service.client.models.calls[0]["config"].system_instruction == "You are helpful\n\nKeep answers short."
 
-    contents = service.client.models.calls[0]["contents"]
-    assert [content.role for content in contents] == ["user", "model", "user"]
-    assert [content.parts[0].text for content in contents] == [
-        "First question",
-        "First answer",
-        "Follow-up question",
+    call = service.client.chat.completions.calls[0]
+    assert call["messages"] == [
+        {"role": "system", "content": "You are helpful"},
+        {"role": "system", "content": "Keep answers short."},
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": "First answer"},
+        {"role": "user", "content": "Follow-up question"},
     ]
 
 
 def test_generate_response_uses_settings_defaults():
     class DummyResponse:
-        text = "hello"
-        usage_metadata = None
+        class Choice:
+            class Message:
+                def __init__(self, content):
+                    self.content = content
 
-    class DummyModels:
+            def __init__(self, content):
+                self.message = DummyResponse.Choice.Message(content)
+
+        def __init__(self):
+            self.choices = [DummyResponse.Choice("hello")]
+            self.usage = None
+
+    class DummyCompletions:
         def __init__(self):
             self.calls = []
 
-        def generate_content(self, model, contents, config):
-            self.calls.append({"model": model, "contents": contents, "config": config})
+        def create(self, model, messages, temperature, max_tokens):
+            self.calls.append(
+                {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+            )
             return DummyResponse()
+
+    class DummyChat:
+        def __init__(self):
+            self.completions = DummyCompletions()
 
     class DummyClient:
         def __init__(self):
-            self.models = DummyModels()
+            self.chat = DummyChat()
 
     settings = type(
         "Settings",
         (),
-        {"GEMINI_TEMPERATURE": 0.55, "GEMINI_MAX_OUTPUT_TOKENS": 256, "GEMINI_MODEL_NAME": "gemini-2.0-flash"},
+        {
+            "GROQ_TEMPERATURE": 0.55,
+            "GROQ_MAX_OUTPUT_TOKENS": 256,
+            "GROQ_MODEL_NAME": "llama-3.3-70b-versatile",
+        },
     )()
 
     service = chat_service.ChatService(system_prompt="You are helpful")
@@ -120,23 +189,34 @@ def test_generate_response_uses_settings_defaults():
 
     asyncio.run(service.generate_response([Message(role="user", content="Hi")]))
 
-    config = service.client.models.calls[0]["config"]
-    assert config.temperature == 0.55
-    assert config.max_output_tokens == 256
+    call = service.client.chat.completions.calls[0]
+    assert call["temperature"] == 0.55
+    assert call["max_tokens"] == 256
 
 
-def test_generate_response_blocks_identity_questions_without_gemini_call():
-    class DummyModels:
+def test_generate_response_blocks_identity_questions_without_groq_call():
+    class DummyCompletions:
         def __init__(self):
             self.calls = []
 
-        def generate_content(self, model, contents, config):
-            self.calls.append({"model": model, "contents": contents, "config": config})
-            raise AssertionError("Gemini should not be called for identity questions")
+        def create(self, model, messages, temperature, max_tokens):
+            self.calls.append(
+                {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+            )
+            raise AssertionError("Groq should not be called for identity questions")
+
+    class DummyChat:
+        def __init__(self):
+            self.completions = DummyCompletions()
 
     class DummyClient:
         def __init__(self):
-            self.models = DummyModels()
+            self.chat = DummyChat()
 
     service = chat_service.ChatService(system_prompt="You are helpful")
     service.client = DummyClient()
@@ -144,53 +224,28 @@ def test_generate_response_blocks_identity_questions_without_gemini_call():
     response = asyncio.run(service.generate_response([Message(role="user", content="Who are you?")]))
 
     assert response.text == "I'm Alex. Nice to meet you. I enjoy talking with people and having interesting conversations."
-    assert service.client.models.calls == []
+    assert service.client.chat.completions.calls == []
 
 
-def test_generate_response_retries_with_secondary_model_when_quota_is_exhausted():
-    class DummyResponse:
-        text = "hello"
-        usage_metadata = None
+def test_generate_response_returns_fallback_when_groq_fails(monkeypatch):
+    class DummyCompletions:
+        def create(self, model, messages, temperature, max_tokens):
+            raise RuntimeError("Service unavailable")
 
-    class DummyModels:
+    class DummyChat:
         def __init__(self):
-            self.calls = []
-
-        def generate_content(self, model, contents, config):
-            self.calls.append(model)
-            if model == "gemini-2.0-flash-lite":
-                raise chat_service.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, None)
-            return DummyResponse()
+            self.completions = DummyCompletions()
 
     class DummyClient:
         def __init__(self):
-            self.models = DummyModels()
-
-    service = chat_service.ChatService(system_prompt="You are helpful")
-    service.client = DummyClient()
-    service.settings.GEMINI_MODEL_NAME = "gemini-2.0-flash-lite"
-
-    response = asyncio.run(service.generate_response([Message(role="user", content="Hello")]))
-
-    assert response.text == "hello"
-    assert service.client.models.calls == ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
-
-
-def test_generate_response_returns_fallback_when_gemini_fails(monkeypatch):
-    class DummyModels:
-        def generate_content(self, model, contents, config):
-            raise chat_service.ClientError(429, {}, None)
-
-    class DummyClient:
-        def __init__(self):
-            self.models = DummyModels()
+            self.chat = DummyChat()
 
     service = chat_service.ChatService(system_prompt="You are helpful")
     service.client = DummyClient()
 
     response = asyncio.run(service.generate_response([Message(role="user", content="Hello")]))
 
-    assert "unable to reach the AI service" in response.text.lower()
+    assert "unable to reach the ai service" in response.text.lower()
 
 
 def test_validate_request_rejects_empty_messages():
@@ -204,7 +259,7 @@ def test_validate_request_rejects_empty_messages():
 
 
 def test_initialize_rejects_missing_api_key(monkeypatch):
-    monkeypatch.setattr(chat_service, "get_settings", lambda: type("Settings", (), {"GEMINI_API_KEY": "", "GEMINI_MODEL_NAME": "gemini-2.0-flash"})())
+    monkeypatch.setattr(chat_service, "get_settings", lambda: type("Settings", (), {"GROQ_API_KEY": "", "GROQ_MODEL_NAME": "llama-3.3-70b-versatile"})())
 
     service = chat_service.ChatService(system_prompt="You are helpful")
 

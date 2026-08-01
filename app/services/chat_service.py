@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from groq import Groq
+from types import SimpleNamespace
 
 from app.config.settings import get_settings
 from app.schemas.chat import Message
@@ -43,10 +44,45 @@ class GroqResponseWrapper:
 
     @property
     def usage_metadata(self) -> Any:
-        usage = getattr(self._raw_response, "usage", None)
-        if usage is None:
-            usage = getattr(self._raw_response, "usage_metadata", None)
-        return usage
+        raw_usage = getattr(self._raw_response, "usage", None)
+        if raw_usage is None:
+            raw_usage = getattr(self._raw_response, "usage_metadata", None)
+
+        if raw_usage is None:
+            return None
+
+        # Normalize usage fields into the names expected by the rest of the codebase
+        def _get(obj, *keys):
+            for k in keys:
+                if isinstance(obj, dict) and k in obj:
+                    return obj[k]
+                if not isinstance(obj, dict) and hasattr(obj, k):
+                    return getattr(obj, k)
+            return None
+
+        prompt = _get(raw_usage, "prompt_token_count", "prompt_tokens", "promptTokens", "prompt")
+        completion = _get(raw_usage, "candidates_token_count", "completion_tokens", "completionTokens", "completion")
+        total = _get(raw_usage, "total_token_count", "total_tokens", "totalTokens", "total")
+
+        # Fallback: if total is missing but prompt/completion present, compute.
+        try:
+            prompt_val = int(prompt) if prompt is not None else 0
+        except Exception:
+            prompt_val = 0
+        try:
+            completion_val = int(completion) if completion is not None else 0
+        except Exception:
+            completion_val = 0
+        try:
+            total_val = int(total) if total is not None else (prompt_val + completion_val)
+        except Exception:
+            total_val = prompt_val + completion_val
+
+        return SimpleNamespace(
+            prompt_token_count=prompt_val,
+            candidates_token_count=completion_val,
+            total_token_count=total_val,
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._raw_response, name)
@@ -128,15 +164,50 @@ class ChatService:
 
     def _build_request_messages(self, messages: List[Message]) -> List[dict[str, str]]:
         """Convert OpenAI-style messages into Groq chat format while preserving history."""
+        # Final order must be:
+        # 1. Cached system prompt
+        # 2. Client system message(s) (if present)
+        # 3. Previous conversation history
+        # 4. Latest user message
+
         payload: List[dict[str, str]] = []
 
-        if self.system_prompt:
-            payload.append({"role": "system", "content": self.system_prompt})
+        # Always include the cached system prompt first (may be empty string).
+        payload.append({"role": "system", "content": self.system_prompt or ""})
 
-        for message in messages:
-            if not message.content or not message.content.strip():
+        # Collect client-supplied system messages (preserve original order)
+        client_systems: List[str] = [
+            m.content.strip() for m in messages if m.role == "system" and m.content and m.content.strip()
+        ]
+
+        # Find the latest user message (most recent)
+        latest_user: Optional[Message] = None
+        for m in reversed(messages):
+            if m.role == "user" and m.content and m.content.strip():
+                latest_user = m
+                break
+
+        # Previous conversation history: all non-system messages except the latest user message
+        history: List[dict[str, str]] = []
+        for m in messages:
+            if not m.content or not m.content.strip():
                 continue
-            payload.append({"role": message.role, "content": message.content.strip()})
+            if m is latest_user:
+                continue
+            if m.role == "system":
+                continue
+            history.append({"role": m.role, "content": m.content.strip()})
+
+        # Append client system messages immediately after cached prompt
+        for sys_text in client_systems:
+            payload.append({"role": "system", "content": sys_text})
+
+        # Append previous history
+        payload.extend(history)
+
+        # Ensure latest user message is last (if present)
+        if latest_user is not None:
+            payload.append({"role": "user", "content": latest_user.content.strip()})
 
         return payload
 
