@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = Field(default=8000, ge=1, le=65535)
 
-    GEMINI_API_KEY: str = Field(..., min_length=1)
-    GEMINI_MODEL_NAME: str = "gemini-1.5-flash"
-    GEMINI_TEMPERATURE: float = Field(default=0.8, ge=0.0, le=2.0)
-    GEMINI_MAX_OUTPUT_TOKENS: int | None = Field(default=None, ge=1)
+    GROQ_API_KEY: str = Field(..., min_length=1)
+    GROQ_MODEL_NAME: str = "llama-3.3-70b-versatile"
+    GROQ_TEMPERATURE: float = Field(default=0.4, ge=0.0, le=2.0)
+    GROQ_MAX_OUTPUT_TOKENS: int | None = Field(default=180, ge=1)
 
     model_config = SettingsConfigDict(
         env_file=DEFAULT_ENV_FILE,
@@ -55,12 +55,12 @@ class Settings(BaseSettings):
     def environment(self) -> str:
         return self.ENVIRONMENT
 
-    @field_validator("GEMINI_MODEL_NAME")
+    @field_validator("GROQ_MODEL_NAME")
     @classmethod
     def validate_model_name(cls, value: str) -> str:
         cleaned_value = value.strip()
         if not cleaned_value:
-            raise ValueError("GEMINI_MODEL_NAME must not be empty.")
+            raise ValueError("GROQ_MODEL_NAME must not be empty.")
         return cleaned_value
 
     @field_validator("ENVIRONMENT")

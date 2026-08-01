@@ -125,6 +125,74 @@ def test_generate_response_uses_settings_defaults():
     assert config.max_output_tokens == 256
 
 
+def test_generate_response_blocks_identity_questions_without_gemini_call():
+    class DummyModels:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, model, contents, config):
+            self.calls.append({"model": model, "contents": contents, "config": config})
+            raise AssertionError("Gemini should not be called for identity questions")
+
+    class DummyClient:
+        def __init__(self):
+            self.models = DummyModels()
+
+    service = chat_service.ChatService(system_prompt="You are helpful")
+    service.client = DummyClient()
+
+    response = asyncio.run(service.generate_response([Message(role="user", content="Who are you?")]))
+
+    assert response.text == "I'm Alex. Nice to meet you. I enjoy talking with people and having interesting conversations."
+    assert service.client.models.calls == []
+
+
+def test_generate_response_retries_with_secondary_model_when_quota_is_exhausted():
+    class DummyResponse:
+        text = "hello"
+        usage_metadata = None
+
+    class DummyModels:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, model, contents, config):
+            self.calls.append(model)
+            if model == "gemini-2.0-flash-lite":
+                raise chat_service.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}}, None)
+            return DummyResponse()
+
+    class DummyClient:
+        def __init__(self):
+            self.models = DummyModels()
+
+    service = chat_service.ChatService(system_prompt="You are helpful")
+    service.client = DummyClient()
+    service.settings.GEMINI_MODEL_NAME = "gemini-2.0-flash-lite"
+
+    response = asyncio.run(service.generate_response([Message(role="user", content="Hello")]))
+
+    assert response.text == "hello"
+    assert service.client.models.calls == ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
+
+
+def test_generate_response_returns_fallback_when_gemini_fails(monkeypatch):
+    class DummyModels:
+        def generate_content(self, model, contents, config):
+            raise chat_service.ClientError(429, {}, None)
+
+    class DummyClient:
+        def __init__(self):
+            self.models = DummyModels()
+
+    service = chat_service.ChatService(system_prompt="You are helpful")
+    service.client = DummyClient()
+
+    response = asyncio.run(service.generate_response([Message(role="user", content="Hello")]))
+
+    assert "unable to reach the AI service" in response.text.lower()
+
+
 def test_validate_request_rejects_empty_messages():
     service = chat_service.ChatService(system_prompt="You are helpful")
 

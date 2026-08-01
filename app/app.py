@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routes import register_routes
-from app.services.chat_service import ChatService
+from app.services.chat_service import ChatRequestError, ChatService
 from app.utils.logging import (
     get_logger,
     log_api_failure,
@@ -25,15 +25,22 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    chat_service = ChatService()
+    initialized = False
+
     try:
-        chat_service = ChatService()
         chat_service.initialize()
+        initialized = True
+    except ChatRequestError as exc:
+        logger.warning("Chat service initialization deferred: %s", exc)
+
+    try:
         app.state.chat_service = chat_service
         app.state.settings = get_settings()
         log_startup(
             logger,
             component="app",
-            chat_service_initialized=True,
+            chat_service_initialized=initialized,
             environment=app.state.settings.environment,
         )
         yield

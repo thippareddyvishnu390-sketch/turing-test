@@ -15,8 +15,16 @@ class HealthResponse(BaseModel):
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     settings = get_settings()
-    version = getattr(settings, "app_version", None) or getattr(settings, "APP_VERSION", "0.1.0")
-    environment = getattr(settings, "environment", None) or getattr(settings, "ENVIRONMENT", "development")
+    version = (
+        getattr(settings, "app_version", None)
+        or getattr(settings, "APP_VERSION", None)
+        or "0.1.0"
+    )
+    environment = (
+        getattr(settings, "environment", None)
+        or getattr(settings, "ENVIRONMENT", None)
+        or "development"
+    )
 
     return HealthResponse(
         status="ok",
