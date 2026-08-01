@@ -17,7 +17,7 @@ class ChatCompletionRequest(BaseModel):
     """
     model: str
     messages: List[Message]
-    temperature: Optional[float] = Field(default=1.0, ge=0.0, le=2.0)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
     n: Optional[int] = Field(default=1, ge=1, le=128)
     stream: Optional[bool] = Field(default=False)
